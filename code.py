@@ -5,6 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D # 3Dグラフ用
 import time
 import sys
 
+
 # --- 設定項目 ---
 SERIAL_PORT = "COM5" # ★★★ Arduino IDEで確認したポート番号 ★★★
 BAUD_RATE = 9600
