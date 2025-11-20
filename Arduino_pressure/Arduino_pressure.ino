@@ -22,5 +22,5 @@ void loop() {
   }
   
   // Serial.print('\n'); // Serial.printlnで改行されるため不要
-  delay(3000); // 3秒待機 
+  delay(1000); // 1秒待機 
 }
