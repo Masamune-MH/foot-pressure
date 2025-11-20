@@ -6,7 +6,7 @@ import time
 import sys
 
 # --- 設定項目 ---
-SERIAL_PORT = "COM5" # ★★★ Arduino IDEで確認したポート番号 ★★★
+SERIAL_PORT = "COM15" # ★★★ Arduino IDEで確認したポート番号 ★★★
 BAUD_RATE = 9600
 SENSOR_COUNT = 16
 
