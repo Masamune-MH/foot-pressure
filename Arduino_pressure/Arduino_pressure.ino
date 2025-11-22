@@ -1,6 +1,7 @@
-int sensor_value[16];
+int sensor_value[16]; // スケッチ冒頭の記述 
 
 void setup() {
+
   Serial.begin(9600); // シリアルポート開始
 }
 
@@ -12,6 +13,8 @@ void loop() {
     Serial.print(sensor_value[i]);                // 数値として出力
     if(i < 15) Serial.print(",");                // カンマ区切り
   }
-  Serial.println(); // 改行
-  delay(1000);
+  
+  // Serial.print('\n'); // Serial.printlnで改行されるため不要
+  Serial.println();
+  delay(1000); // 1秒待機 
 }
