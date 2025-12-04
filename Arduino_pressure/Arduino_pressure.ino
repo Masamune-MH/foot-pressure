@@ -1,20 +1,26 @@
-int sensor_value[16]; // スケッチ冒頭の記述 
+// センサー値を格納する配列
+int sensor_value[16]; 
 
 void setup() {
-
   Serial.begin(9600); // シリアルポート開始
 }
 
 void loop() {
+  // 1. センサーデータを読み取って送信
   for(int i = 0; i < 16; i++) {
+    // Arduino Megaなどピンが多いボードでない場合、A6以降は読み取れない可能性があります
     sensor_value[i] = analogRead(i); 
-    Serial.print(sensor_value[i]*5/1023);
-    sensor_value[i] = map(sensor_value[i], 0, 1023, 0, 255); // 0〜255に変換
-    Serial.print(sensor_value[i]);                // 数値として出力
-    if(i < 15) Serial.print(",");                // カンマ区切り
+
+    // 0〜1023 のアナログ値を 0〜255 (1byte) に変換
+    int byte_val = map(sensor_value[i], 0, 1023, 0, 255);
+
+    // 【重要】数値(バイナリ)として送信
+    Serial.write(byte_val); 
   }
   
-  // Serial.print('\n'); // Serial.printlnで改行されるため不要
-  Serial.println();
-  delay(1000); // 1秒待機 
+  // 2. 同期用の改行コードを送信
+  Serial.write('\n'); 
+
+  // 3. 待機 (Pythonの描画速度に合わせて調整)
+  delay(50); 
 }

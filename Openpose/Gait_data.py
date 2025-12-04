@@ -7,8 +7,8 @@ import os
 # ==========================================
 # 設定エリア
 # ==========================================
-VIDEO_PATH = "IMG_7338.mp4"  # ここに動画ファイル名を入れる
-OUTPUT_CSV = "gait_analysis_result.csv" # 保存するCSVファイル名
+VIDEO_PATH = "IMG_7341.mp4"  # ここに動画ファイル名を入れる
+OUTPUT_CSV = "result_edobashiri.csv" # 保存するCSVファイル名
 SHOW_WINDOW = True # 解析中の画面を表示するか (Falseなら高速化)
 # ==========================================
 
