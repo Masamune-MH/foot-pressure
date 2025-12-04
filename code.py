@@ -7,25 +7,25 @@ import sys
 
 
 # --- 設定項目 ---
-SERIAL_PORT = "COM5" # ★★★ Arduino IDEで確認したポート番号 ★★★
+SERIAL_PORT = "COM4" # ★★★ Arduino IDEで確認したポート番号 ★★★
 BAUD_RATE = 9600
 SENSOR_COUNT = 16
 
 # センサー1〜8 (左足) の座標
 LEFT_FOOT_POS = [
-    (0, 0), (1, 0), # つまさき (Sens 1, 2)
-    (0, 1), (1, 1), # 土踏まず前 (Sens 3, 4)
+    (0, 3), (1, 3), # かかと (Sens 7, 8)
     (0, 2), (1, 2), # 土踏まず後 (Sens 5, 6)
-    (0, 3), (1, 3)  # かかと (Sens 7, 8)
+    (0, 1), (1, 1), # 土踏まず前 (Sens 3, 4)
+    (0, 0), (1, 0) # つまさき (Sens 1, 2)
 ]
  
 # センサー9〜16 (右足) の座標
 # 左足の隣 (X座標にスペースを空けて配置)
 RIGHT_FOOT_POS = [
-    (3, 0), (4, 0), # つまさき (Sens 9, 10)
-    (3, 1), (4, 1), # 土踏まず前 (Sens 11, 12)
+    (3, 3), (4, 3), # かかと (Sens 15, 16)
     (3, 2), (4, 2), # 土踏まず後 (Sens 13, 14)
-    (3, 3), (4, 3)  # かかと (Sens 15, 16)
+    (3, 1), (4, 1), # 土踏まず前 (Sens 11, 12)
+    (3, 0), (4, 0) # つまさき (Sens 9, 10)
 ]
 
 # 全センサーの座標リスト (index 0 が Sensor 1 に対応)
@@ -110,7 +110,7 @@ def main():
             # 再設定 (クリアするとラベルなども消えるため)
             ax.set_title("Real-time Foot Pressure")
             ax.set_xlabel("Left <---> Right")
-            ax.set_ylabel("Toe <---> Heel")
+            ax.set_ylabel("Heel <---> Toe")
             ax.set_zlabel("Pressure")
             ax.set_zlim(0, 260)
             
@@ -118,7 +118,7 @@ def main():
             ax.set_xticks([0.5, 3.5])
             ax.set_xticklabels(['Left Foot', 'Right Foot'])
             ax.set_yticks([0.5, 1.5, 2.5, 3.5])
-            ax.set_yticklabels(['Toe', 'Arch1', 'Arch2', 'Heel'])
+            ax.set_yticklabels(['Heel', 'Arch1', 'Arch2', 'Toe'])
 
             # 棒を描画
             ax.bar3d(x_pos, y_pos, np.zeros(SENSOR_COUNT), dx, dy, dz, color=colors, alpha=0.8)
