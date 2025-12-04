@@ -9,7 +9,7 @@ void loop() {
   // 1. センサーデータを読み取って送信
   for(int i = 0; i < 16; i++) {
     // Arduino Megaなどピンが多いボードでない場合、A6以降は読み取れない可能性があります
-    sensor_value[i] = analogRead(i); 
+    sensor_value[i] = analogReadResolution(10); 
 
     // 0〜1023 のアナログ値を 0〜255 (1byte) に変換
     int byte_val = map(sensor_value[i], 0, 1023, 0, 255);
@@ -22,5 +22,5 @@ void loop() {
   Serial.write('\n'); 
 
   // 3. 待機 (Pythonの描画速度に合わせて調整)
-  delay(50); 
+  delay(1000); 
 }
