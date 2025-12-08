@@ -8,7 +8,7 @@ import numpy as np
 SERIAL_PORT = "COM5"  # Arduinoのポートに合わせて変更
 BAUD_RATE = 9600
 SENSOR_COUNT = 16
-CSV_FILENAME = "foot_pressure_data.csv"
+CSV_FILENAME = "foot_pressure_data/sample_person.csv"
 SAMPLES_PER_SESSION = 100 # 1回の計測で保存するデータ数（約5〜10秒分）
 
 def collect_data():
@@ -62,6 +62,7 @@ def collect_data():
     # CSVファイルへの追記モード('a')での保存
     # ファイルがなければヘッダーを作成
     try:
+        CSV_FILENAME = "foot_pressure_data/"+label_name+".csv"
         with open(CSV_FILENAME, 'a', newline='') as f:
             writer = csv.writer(f)
             # ファイルが空ならヘッダーを書き込む

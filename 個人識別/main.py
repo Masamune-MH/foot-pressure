@@ -7,7 +7,8 @@ from sklearn.metrics.pairwise import euclidean_distances
 # ==========================================
 # 設定
 # ==========================================
-DATA_FOLDER = "../foot_pressure_data"  # CSVが入っているフォルダ名
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # main.pyの絶対パス
+DATA_FOLDER = os.path.join(BASE_DIR, "../foot_pressure_data")# CSVが入っているフォルダ名
 WINDOW_SIZE = 100             # 1歩とみなす行数（サンプリングレートに合わせて調整）
 
 def extract_features_from_file(filepath, window_size):
