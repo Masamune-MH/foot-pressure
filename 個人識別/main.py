@@ -7,43 +7,45 @@ from sklearn.metrics.pairwise import euclidean_distances
 # ==========================================
 # 設定
 # ==========================================
-DATA_FOLDER = "data_folder"  # CSVが入っているフォルダ名
-WINDOW_SIZE = 50             # 1歩とみなす行数（サンプリングレートに合わせて調整）
+DATA_FOLDER = "../foot_pressure_data"  # CSVが入っているフォルダ名
+WINDOW_SIZE = 100             # 1歩とみなす行数（サンプリングレートに合わせて調整）
 
 def extract_features_from_file(filepath, window_size):
-    """
-    1つのCSVファイルを読み込み、ウィンドウごとに特徴量を抽出する関数
-    """
-    # ヘッダーなし(header=None)として読み込み
+    # CSVを読み込む（ヘッダー行あり）
     try:
-        df = pd.read_csv(filepath, header=None)
+        df = pd.read_csv(filepath)
     except Exception as e:
         print(f"エラー: {filepath} を読み込めませんでした。 {e}")
         return None, None
 
+    # ラベル列を除去して数値データだけ残す
+    df_values = df.iloc[:, 1:].apply(pd.to_numeric, errors='coerce')  # 1列目以降を数値変換
+
+    # NaN を含む行は除外（足りない行があれば削除）
+    df_values = df_values.dropna()
+
+    if len(df_values) == 0:
+        print(f"警告: {filepath} には有効な数値データがありません。")
+        return None, None
+
     features_list = []
     
-    # データをウィンドウサイズごとに切り出す
-    for start_idx in range(0, len(df), window_size):
+    # ウィンドウ単位で切り出し
+    for start_idx in range(0, len(df_values), window_size):
         end_idx = start_idx + window_size
-        
-        # データが足りない（半端な最後の部分）は捨てる
-        if end_idx > len(df):
+        if end_idx > len(df_values):
             break
-            
-        window = df.iloc[start_idx:end_idx, :]
         
-        # --- 特徴量抽出 (Feature Extraction) ---
-        # 縦軸(時間)方向につぶして、統計量にする
+        window = df_values.iloc[start_idx:end_idx, :]
+
         means = window.mean(axis=0).values
         maxs = window.max(axis=0).values
         stds = window.std(axis=0).values
-        
-        # 結合して1つのベクトルにする (16*3 = 48次元)
+
         feature_vector = np.concatenate([means, maxs, stds])
         features_list.append(feature_vector)
-        
-    return np.array(features_list), df.shape[0]
+
+    return np.array(features_list), df_values.shape[0]
 
 def main():
     # ==========================================
@@ -130,7 +132,7 @@ def main():
         
         # 結果表示（全部出すと多いので、最初と、他人のデータの一部だけ表示）
         # ※実際の実験では全てログに保存したほうが良いです
-        if i < 5 or (test_name != enrolled_name and i % 5 == 0): 
+        if test_name != enrolled_name and (i < 5 or i % 5 == 0): 
             print(f"{test_name:<15} | {str(is_actually_same_person):<10} | {dist:.4f}     | {result_str} ({status_mark})")
 
 if __name__ == "__main__":
