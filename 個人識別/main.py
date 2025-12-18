@@ -2,155 +2,148 @@ import pandas as pd
 import numpy as np
 import glob
 import os
-import matplotlib.pyplot as plt
-
-# 日本語フォント設定
-plt.rcParams['font.family'] = 'sans-serif' 
+import joblib  # 知能の保管用
+from sklearn.ensemble import RandomForestClassifier
 
 # ==========================================
 # 設定エリア
 # ==========================================
-# データが入っているフォルダ
 BASE_FOLDER = "../foot_pressure_data"
-TEST_FOLDER = os.path.join(BASE_FOLDER, "test")
+TRAIN_FOLDER = os.path.join(BASE_FOLDER, "train") # 学習用データ (ファイル名に young/elderly を含める)
+TEST_FOLDER = os.path.join(BASE_FOLDER, "test")   # 判定したいデータ
 
-# ★高齢者判定の閾値（中足部比率）
-# 「全体の圧力のうち、22%以上が中足部にかかっていたら高齢者パターン」とする
-THRESHOLD_MF_RATIO = 0.22 
+DB_FILE = "foot_feature_database.csv"  # 特徴量データベース（CSV）
+MODEL_FILE = "foot_model.joblib"       # AIモデル（知能）
 
-# ★センサの最大値（これを使って値を反転させます）
-# Arduino側が0~255なら255、0~1023なら1023にしてください
 MAX_SENSOR_VALUE = 255
 
-# --- センサの場所定義 (指定された配置) ---
-# 前足部 (Forefoot): 0~3, 8~11
+# センサの場所定義
 IDX_FOREFOOT = [0, 1, 2, 3, 8, 9, 10, 11]
-# 中足部 (Midfoot): 4~5, 12~13
 IDX_MIDFOOT  = [4, 5, 12, 13]
-# 後足部 (Rearfoot): 6~7, 14~15
 IDX_REARFOOT = [6, 7, 14, 15]
 
-
 def calculate_pressure_features(raw_values):
-    """ 
-    センサ値(小さいほど高圧)を、(大きいほど高圧)に変換して計算する関数
-    """
-    # ==========================================================
-    # 1. 値の反転処理 (ここがポイント)
-    # 圧力がかかると値が小さくなるセンサを、扱いやすいように逆転させます
-    # ==========================================================
-    pressure_values = MAX_SENSOR_VALUE - raw_values
+    """ センサ値を反転し、部位ごとの比率を計算（資料に基づき中足部と後足を重視） """
+    pressure_values = np.maximum(MAX_SENSOR_VALUE - raw_values, 0)
+    total = np.sum(pressure_values) + 1e-6
     
-    # 計算誤差でマイナスにならないように0で止める
-    pressure_values = np.maximum(pressure_values, 0)
+    if total < 50: return None
     
-    # 2. 領域ごとの圧力合計計算（反転後の値を使います）
-    p_ff = np.sum(pressure_values[IDX_FOREFOOT]) # 前足部
-    p_mf = np.sum(pressure_values[IDX_MIDFOOT])  # 中足部
-    p_rf = np.sum(pressure_values[IDX_REARFOOT]) # 後足部
+    # 部位別の比率を計算
+    ratio_ff = np.sum(pressure_values[IDX_FOREFOOT]) / total
+    ratio_mf = np.sum(pressure_values[IDX_MIDFOOT]) / total
+    ratio_rf = np.sum(pressure_values[IDX_REARFOOT]) / total
     
-    total_pressure = p_ff + p_mf + p_rf
-    
-    # 足が浮いている（圧力がほぼゼロ）場合は計算しない
-    # ノイズ対策として、合計値が小さいときは無視します
-    if total_pressure < 50: 
-        return None, 0, 0, 0
+    # AIに渡す特徴量リスト
+    return [ratio_ff, ratio_mf, ratio_rf]
 
-    # 3. 比率計算 (中足部 / 全体)
-    ratio_mf = p_mf / total_pressure
-    
-    return ratio_mf, p_ff, p_mf, p_rf
-
-def analyze_file_pattern(filepath):
-    """ 1つのCSVファイルを読み込んで判定する """
+def extract_features_from_file(filepath):
+    """ ファイルから全フレームの特徴量を抽出 """
     try:
-        # CSV読み込み
         df = pd.read_csv(filepath)
+        # ※csvの形式に合わせて列番号は調整してください（現在は2列目以降を使用）
+        sensor_df = df.iloc[:, 2:18] 
+        raw_data = sensor_df.values.astype(float)
         
-        # データ列の特定（Sensor1～Sensor16 または 2列目以降）
-        if 'Sensor1' in df.columns:
-            sensor_cols = [f'Sensor{i}' for i in range(1, 17)]
-            sensor_df = df[sensor_cols]
-        else:
-            # カラム名がない場合、2列目から18列目(インデックス2~17)を取得
-            sensor_df = df.iloc[:, 2:18]
-
-        # 計算のために少数(float)型に変換
-        raw_sensor_data = sensor_df.values.astype(float)
-        
-        if raw_sensor_data.shape[1] != 16:
-            print(f"列数エラー: {filepath} は16列ではありません")
-            return None
-
+        feats = []
+        for row in raw_data:
+            f = calculate_pressure_features(row)
+            if f: feats.append(f)
+        return feats
     except Exception as e:
-        print(f"読込エラー ({filepath}): {e}")
+        print(f"Error reading {filepath}: {e}")
         return None
 
-    # --- フレームごとの判定 ---
-    elderly_count = 0
-    young_count = 0
-    valid_ratios = []
-
-    for i in range(len(raw_sensor_data)):
-        row_raw = raw_sensor_data[i]
-        
-        # 特徴量計算（ここで内部的に値が反転されます）
-        result = calculate_pressure_features(row_raw)
-        
-        # 足が乗っていないフレームはスキップ
-        if result[0] is None:
-            continue
-            
-        ratio_mf, p_ff, p_mf, p_rf = result
-        valid_ratios.append(ratio_mf)
-
-        # ★ 判定ロジック ★
-        # 中足部の比率が閾値を超えていたら「高齢者パターン」
-        if ratio_mf > THRESHOLD_MF_RATIO:
-            elderly_count += 1
-        else:
-            young_count += 1
-
-    # 結果集計
-    valid_frames = elderly_count + young_count
-    if valid_frames == 0:
-        return {
-            "file": os.path.basename(filepath),
-            "result": "データなし(足離れ)",
-            "avg_mf_ratio": 0
-        }
-
-    # 最終判定（多数決）
-    final_judgement = "高齢者パターン" if elderly_count > young_count else "若者パターン"
-    avg_mf_ratio = np.mean(valid_ratios)
-
-    return {
-        "file": os.path.basename(filepath),
-        "result": final_judgement,
-        "avg_mf_ratio": avg_mf_ratio
-    }
-
-def main():
-    print(f"=== 足圧判定プログラム ===")
-    print(f"設定: 値が大きいほど高圧力に変換して計算")
-    print(f"閾値: 中足部が全体の {THRESHOLD_MF_RATIO*100:.1f}% 以上なら高齢者と判定")
-    print("-" * 60)
-
-    # フォルダ内のCSVリストを取得
-    csv_files = glob.glob(os.path.join(TEST_FOLDER, "*.csv"))
+# ==========================================
+# 1. 学習とデータベース保管（ファイル名判定版）
+# ==========================================
+def learn_and_store():
+    print("=== 学習モード: データベースを更新中 ===")
     
-    if not csv_files:
-        print(f"CSVファイルが見つかりません: {TEST_FOLDER}")
+    if not os.path.exists(TRAIN_FOLDER):
+        print(f"エラー: 学習用フォルダが見つかりません: {TRAIN_FOLDER}")
         return
 
-    print(f"{'ファイル名':<25} | {'中足部率':<10} | {'判定結果'}")
-    print("-" * 60)
+    all_features = []
+    csv_files = glob.glob(os.path.join(TRAIN_FOLDER, "*.csv"))
+    
+    if not csv_files:
+        print("エラー: 学習用CSVファイルが見つかりません。")
+        return
 
-    for filepath in csv_files:
-        res = analyze_file_pattern(filepath)
-        if res:
-            ratio_str = f"{res['avg_mf_ratio']*100:.1f}%"
-            print(f"{res['file']:<25} | {ratio_str:<10} | {res['result']}")
+    for f in csv_files:
+        filename = os.path.basename(f).lower() # 小文字にして判定しやすくする
+        
+        # ▼ ファイル名からラベルを決定 ▼
+        if "young" in filename:
+            label = "若者"
+        elif "elderly" in filename:
+            label = "高齢者"
+        else:
+            print(f"スキップ: ファイル名に 'young' も 'elderly' も含まれていません -> {filename}")
+            continue
+        
+        # 特徴量抽出
+        feats = extract_features_from_file(f)
+        if feats:
+            for ft in feats:
+                all_features.append(ft + [label])
+            print(f"読込完了: {filename} ({label}) - {len(feats)}フレーム")
+
+    if not all_features:
+        print("学習可能なデータがありませんでした。ファイル名を確認してください。")
+        return
+
+    # 特徴量をCSVデータベースとして保管
+    new_df = pd.DataFrame(all_features, columns=["FF", "MF", "RF", "Label"])
+    new_df.to_csv(DB_FILE, index=False, encoding="utf-8-sig")
+    
+    # AI（モデル）の学習と保管
+    X = new_df.drop("Label", axis=1)
+    y = new_df["Label"]
+    
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X, y)
+    joblib.dump(model, MODEL_FILE)
+    
+    print("-" * 30)
+    print(f"完了: {len(new_df)}件のデータを学習し、モデルを保存しました。")
+
+# ==========================================
+# 2. 判定（テストデータと比較）
+# ==========================================
+def predict_test_data():
+    if not os.path.exists(MODEL_FILE):
+        print("エラー: 学習済みモデルがありません。先に学習を実行してください。")
+        return
+    
+    if not os.path.exists(TEST_FOLDER):
+        print(f"エラー: テスト用フォルダが見つかりません: {TEST_FOLDER}")
+        return
+
+    print("=== 判定モード: データ判定中 ===")
+    model = joblib.load(MODEL_FILE)
+    test_files = glob.glob(os.path.join(TEST_FOLDER, "*.csv"))
+    
+    print(f"{'ファイル名':<30} | {'判定結果'}")
+    print("-" * 50)
+    
+    for f in test_files:
+        feats = extract_features_from_file(f)
+        if feats:
+            # 各フレームの予測を行い、多数決で決める
+            preds = model.predict(feats)
+            if len(preds) > 0:
+                final_res = pd.Series(preds).mode()[0]
+                print(f"{os.path.basename(f):<30} | {final_res}")
+            else:
+                print(f"{os.path.basename(f):<30} | 判定不可（有効データなし）")
 
 if __name__ == "__main__":
-    main()
+    # 実行したい方のコメントアウトを外してください
+    
+    # 1. データを学習させる時
+    learn_and_store()
+    
+    # 2. 新しいデータを判定する時
+    predict_test_data()
