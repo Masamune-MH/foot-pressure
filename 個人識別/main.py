@@ -3,164 +3,154 @@ import numpy as np
 import glob
 import os
 import matplotlib.pyplot as plt
-# 日本語フォント設定（環境によっては文字化けする可能性があります。その場合は 'sans-serif' などに変更してください）
+
+# 日本語フォント設定
 plt.rcParams['font.family'] = 'sans-serif' 
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
-
 # ==========================================
-# 設定
+# 設定エリア
 # ==========================================
-# フォルダ構成に合わせてパスを変更
-BASE_FOLDER = "../foot_pressure_data"  
-TRAIN_FOLDER = os.path.join(BASE_FOLDER, "train")
+# データが入っているフォルダ
+BASE_FOLDER = "../foot_pressure_data"
 TEST_FOLDER = os.path.join(BASE_FOLDER, "test")
 
-WINDOW_SIZE = 10
+# ★高齢者判定の閾値（中足部比率）
+# 「全体の圧力のうち、22%以上が中足部にかかっていたら高齢者パターン」とする
+THRESHOLD_MF_RATIO = 0.22 
 
-# --- センサ座標定義 ---
-SENSOR_COORDS = {
-    1: (-2, 3), 2: (-4, 3), 3: (-2, 2), 4: (-4, 2),
-    5: (-2, 1), 6: (-4, 1), 7: (-2, 0), 8: (-4, 0),
-    9:  (2, 3), 10: (4, 3), 11: (2, 2), 12: (4, 2),
-    13: (2, 1), 14: (4, 1), 15: (2, 0), 16: (4, 0)
-}
+# ★センサの最大値（これを使って値を反転させます）
+# Arduino側が0~255なら255、0~1023なら1023にしてください
+MAX_SENSOR_VALUE = 255
 
-def calculate_cop_trajectory(sensor_data_values):
-    """ 重心(COP)計算 """
-    coords = np.array([SENSOR_COORDS[i+1] for i in range(16)])
-    pressure_values = sensor_data_values.astype(float)
-    total_pressure = np.sum(pressure_values, axis=1)
-    total_pressure[total_pressure == 0] = 1e-6
-    cop_x = np.dot(pressure_values, coords[:, 0]) / total_pressure
-    cop_y = np.dot(pressure_values, coords[:, 1]) / total_pressure
-    return pd.DataFrame({'X': cop_x, 'Y': cop_y})
+# --- センサの場所定義 (指定された配置) ---
+# 前足部 (Forefoot): 0~3, 8~11
+IDX_FOREFOOT = [0, 1, 2, 3, 8, 9, 10, 11]
+# 中足部 (Midfoot): 4~5, 12~13
+IDX_MIDFOOT  = [4, 5, 12, 13]
+# 後足部 (Rearfoot): 6~7, 14~15
+IDX_REARFOOT = [6, 7, 14, 15]
 
-def calculate_sway_features(cop_df, time_data=None):
-    """ 特徴量抽出 """
-    x = cop_df['X'].values
-    y = cop_df['Y'].values
-    path_length = np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2))
-    ap_range = np.max(y) - np.min(y)
-    ml_range = np.max(x) - np.min(x)
+
+def calculate_pressure_features(raw_values):
+    """ 
+    センサ値(小さいほど高圧)を、(大きいほど高圧)に変換して計算する関数
+    """
+    # ==========================================================
+    # 1. 値の反転処理 (ここがポイント)
+    # 圧力がかかると値が小さくなるセンサを、扱いやすいように逆転させます
+    # ==========================================================
+    pressure_values = MAX_SENSOR_VALUE - raw_values
     
-    if time_data is not None and len(time_data) > 1:
-        duration = time_data[-1] - time_data[0]
-        if duration == 0: duration = 1
-        mean_velocity = path_length / duration
-    else:
-        mean_velocity = path_length / len(cop_df)
+    # 計算誤差でマイナスにならないように0で止める
+    pressure_values = np.maximum(pressure_values, 0)
+    
+    # 2. 領域ごとの圧力合計計算（反転後の値を使います）
+    p_ff = np.sum(pressure_values[IDX_FOREFOOT]) # 前足部
+    p_mf = np.sum(pressure_values[IDX_MIDFOOT])  # 中足部
+    p_rf = np.sum(pressure_values[IDX_REARFOOT]) # 後足部
+    
+    total_pressure = p_ff + p_mf + p_rf
+    
+    # 足が浮いている（圧力がほぼゼロ）場合は計算しない
+    # ノイズ対策として、合計値が小さいときは無視します
+    if total_pressure < 50: 
+        return None, 0, 0, 0
 
-    mean_x = np.mean(x)
-    mean_y = np.mean(y)
-    return np.array([path_length, ap_range, ml_range, mean_velocity, mean_x, mean_y])
+    # 3. 比率計算 (中足部 / 全体)
+    ratio_mf = p_mf / total_pressure
+    
+    return ratio_mf, p_ff, p_mf, p_rf
 
-def extract_features_from_file(filepath, window_size):
-    """ ファイル単体から特徴量を抽出 """
+def analyze_file_pattern(filepath):
+    """ 1つのCSVファイルを読み込んで判定する """
     try:
-        df = pd.read_csv(filepath) 
-        if 'Label' not in df.columns or 'Sensor1' not in df.columns:
-            return None, None
+        # CSV読み込み
+        df = pd.read_csv(filepath)
+        
+        # データ列の特定（Sensor1～Sensor16 または 2列目以降）
+        if 'Sensor1' in df.columns:
+            sensor_cols = [f'Sensor{i}' for i in range(1, 17)]
+            sensor_df = df[sensor_cols]
+        else:
+            # カラム名がない場合、2列目から18列目(インデックス2~17)を取得
+            sensor_df = df.iloc[:, 2:18]
 
-        user_name = str(df['Label'].iloc[0])
-        sensor_df = df.iloc[:, 2:18]
-        time_vals = df['Time'].values if 'Time' in df.columns else None
-
-        if sensor_df.shape[1] < 16: return None, None
+        # 計算のために少数(float)型に変換
+        raw_sensor_data = sensor_df.values.astype(float)
+        
+        if raw_sensor_data.shape[1] != 16:
+            print(f"列数エラー: {filepath} は16列ではありません")
+            return None
 
     except Exception as e:
-        print(f"エラー ({filepath}): {e}")
-        return None, None
+        print(f"読込エラー ({filepath}): {e}")
+        return None
 
-    features_list = []
-    df_cop = calculate_cop_trajectory(sensor_df.values)
-    step = window_size // 2
-    
-    for start_idx in range(0, len(df_cop) - window_size, step):
-        end_idx = start_idx + window_size
-        window_cop = df_cop.iloc[start_idx:end_idx, :]
-        window_time = time_vals[start_idx:end_idx] if time_vals is not None else None
-        feat = calculate_sway_features(window_cop, window_time)
-        features_list.append(feat)
+    # --- フレームごとの判定 ---
+    elderly_count = 0
+    young_count = 0
+    valid_ratios = []
+
+    for i in range(len(raw_sensor_data)):
+        row_raw = raw_sensor_data[i]
         
-    return np.array(features_list), user_name
+        # 特徴量計算（ここで内部的に値が反転されます）
+        result = calculate_pressure_features(row_raw)
+        
+        # 足が乗っていないフレームはスキップ
+        if result[0] is None:
+            continue
+            
+        ratio_mf, p_ff, p_mf, p_rf = result
+        valid_ratios.append(ratio_mf)
 
-def load_dataset_from_folder(folder_path):
-    """ 指定フォルダ内の全CSVから学習用データ(X, y)を作成 """
-    X_list = []
-    y_list = []
-    
-    csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
-    print(f"フォルダ読込中: {folder_path} ({len(csv_files)}ファイル)")
-    
-    for filepath in csv_files:
-        features, name = extract_features_from_file(filepath, WINDOW_SIZE)
-        if features is not None and len(features) > 0:
-            for f in features:
-                X_list.append(f)
-                y_list.append(name)
-    
-    return np.array(X_list), np.array(y_list)
+        # ★ 判定ロジック ★
+        # 中足部の比率が閾値を超えていたら「高齢者パターン」
+        if ratio_mf > THRESHOLD_MF_RATIO:
+            elderly_count += 1
+        else:
+            young_count += 1
+
+    # 結果集計
+    valid_frames = elderly_count + young_count
+    if valid_frames == 0:
+        return {
+            "file": os.path.basename(filepath),
+            "result": "データなし(足離れ)",
+            "avg_mf_ratio": 0
+        }
+
+    # 最終判定（多数決）
+    final_judgement = "高齢者パターン" if elderly_count > young_count else "若者パターン"
+    avg_mf_ratio = np.mean(valid_ratios)
+
+    return {
+        "file": os.path.basename(filepath),
+        "result": final_judgement,
+        "avg_mf_ratio": avg_mf_ratio
+    }
 
 def main():
-    # 1. データセットの読み込み (Train / Test を別々に読み込む)
-    print("--- 学習データ(Train)の読み込み ---")
-    X_train, y_train = load_dataset_from_folder(TRAIN_FOLDER)
-    
-    print("\n--- 検証データ(Test)の読み込み ---")
-    X_test, y_test = load_dataset_from_folder(TEST_FOLDER)
+    print(f"=== 足圧判定プログラム ===")
+    print(f"設定: 値が大きいほど高圧力に変換して計算")
+    print(f"閾値: 中足部が全体の {THRESHOLD_MF_RATIO*100:.1f}% 以上なら高齢者と判定")
+    print("-" * 60)
 
-    # データがあるか確認
-    if len(X_train) == 0 or len(X_test) == 0:
-        print("エラー: データが正しく読み込めませんでした。フォルダ構成を確認してください。")
-        print(f"Train数: {len(X_train)}, Test数: {len(X_test)}")
+    # フォルダ内のCSVリストを取得
+    csv_files = glob.glob(os.path.join(TEST_FOLDER, "*.csv"))
+    
+    if not csv_files:
+        print(f"CSVファイルが見つかりません: {TEST_FOLDER}")
         return
 
-    print(f"\n学習データ数: {len(X_train)}")
-    print(f"検証データ数: {len(X_test)}")
+    print(f"{'ファイル名':<25} | {'中足部率':<10} | {'判定結果'}")
+    print("-" * 60)
 
-    # 2. 学習
-    print("\nAIモデルを学習中...")
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-
-    # 3. 評価
-    print("評価中...")
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    
-    print(f"\n=== 結果 ===")
-    print(f"正解率 (Accuracy): {accuracy * 100:.2f}%")
-    print("\n詳細レポート:")
-    print(classification_report(y_test, y_pred))
-
-    # 4. 混同行列（Confusion Matrix）の可視化
-    print("混同行列を表示します...")
-    
-    # クラス名（ユーザー名）のリストを取得
-    labels = model.classes_
-    
-    # 行列計算
-    cm = confusion_matrix(y_test, y_pred, labels=labels)
-    
-    # グラフィカルに表示
-    fig, ax = plt.subplots(figsize=(8, 6))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
-    
-    # 色使いを調整 (Bluesなどが見やすい)
-    disp.plot(cmap=plt.cm.Blues, ax=ax, xticks_rotation=45)
-    
-    plt.title("Confusion Matrix (Prediction Result)")
-    plt.tight_layout()
-    plt.show()
-
-    # 特徴量の重要度
-    print("\n特徴量の重要度:")
-    feature_names = ["軌跡長", "A-P幅(前後)", "M-L幅(左右)", "平均速度", "重心X平均", "重心Y平均"]
-    importances = model.feature_importances_
-    for name, imp in zip(feature_names, importances):
-        print(f"  {name}: {imp:.4f}")
+    for filepath in csv_files:
+        res = analyze_file_pattern(filepath)
+        if res:
+            ratio_str = f"{res['avg_mf_ratio']*100:.1f}%"
+            print(f"{res['file']:<25} | {ratio_str:<10} | {res['result']}")
 
 if __name__ == "__main__":
     main()
