@@ -2,197 +2,155 @@ import pandas as pd
 import numpy as np
 import glob
 import os
-import matplotlib.pyplot as plt  # グラフ描画用にインポート
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
+
+# 日本語フォント設定
+plt.rcParams['font.family'] = 'sans-serif' 
 
 # ==========================================
-# 設定
+# 設定エリア
 # ==========================================
-DATA_FOLDER = "../foot_pressure_data" # 前回の保存先フォルダ名に合わせました
-WINDOW_SIZE = 10
+# データが入っているフォルダ
+BASE_FOLDER = "../foot_pressure_data"
+TEST_FOLDER = os.path.join(BASE_FOLDER, "test")
 
-# --- センサ座標定義 ---
-SENSOR_COORDS = {
-    1: (-2, 3), 2: (-4, 3), 3: (-2, 2), 4: (-4, 2),
-    5: (-2, 1), 6: (-4, 1), 7: (-2, 0), 8: (-4, 0),
-    9:  (2, 3), 10: (4, 3), 11: (2, 2), 12: (4, 2),
-    13: (2, 1), 14: (4, 1), 15: (2, 0), 16: (4, 0)
-}
+# ★高齢者判定の閾値（中足部比率）
+# 「全体の圧力のうち、22%以上が中足部にかかっていたら高齢者パターン」とする
+THRESHOLD_MF_RATIO = 0.22 
 
-def calculate_cop_trajectory(sensor_data_values):
-    """ 重心(COP)計算 """
-    coords = np.array([SENSOR_COORDS[i+1] for i in range(16)])
-    pressure_values = sensor_data_values.astype(float)
-    total_pressure = np.sum(pressure_values, axis=1)
-    
-    # ゼロ除算回避
-    total_pressure[total_pressure == 0] = 1e-6
-    
-    cop_x = np.dot(pressure_values, coords[:, 0]) / total_pressure
-    cop_y = np.dot(pressure_values, coords[:, 1]) / total_pressure
-    return pd.DataFrame({'X': cop_x, 'Y': cop_y})
+# ★センサの最大値（これを使って値を反転させます）
+# Arduino側が0~255なら255、0~1023なら1023にしてください
+MAX_SENSOR_VALUE = 255
 
-def calculate_sway_features(cop_df, time_data=None):
-    """ 特徴量抽出 """
-    x = cop_df['X'].values
-    y = cop_df['Y'].values
-    
-    # 1. 総軌跡長 (Total Path Length)
-    path_length = np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2))
-    
-    # 2. 動揺範囲 (Range)
-    ap_range = np.max(y) - np.min(y) # 前後
-    ml_range = np.max(x) - np.min(x) # 左右
-    
-    # 3. 平均速度 (Mean Velocity)
-    # Timeデータがあれば正確に計算、なければデータ点数で概算
-    if time_data is not None and len(time_data) > 1:
-        duration = time_data[-1] - time_data[0]
-        if duration == 0: duration = 1 # エラー回避
-        mean_velocity = path_length / duration
-    else:
-        mean_velocity = path_length / len(cop_df) # 簡易版
+# --- センサの場所定義 (指定された配置) ---
+# 前足部 (Forefoot): 0~3, 8~11
+IDX_FOREFOOT = [0, 1, 2, 3, 8, 9, 10, 11]
+# 中足部 (Midfoot): 4~5, 12~13
+IDX_MIDFOOT  = [4, 5, 12, 13]
+# 後足部 (Rearfoot): 6~7, 14~15
+IDX_REARFOOT = [6, 7, 14, 15]
 
-    mean_x = np.mean(x)
-    mean_y = np.mean(y)
-    
-    return np.array([path_length, ap_range, ml_range, mean_velocity, mean_x, mean_y])
 
-def extract_features_from_file(filepath, window_size):
+def calculate_pressure_features(raw_values):
     """ 
-    新しいCSV形式に対応したデータ読み込み関数
-    Header: [Label, Time, Sensor1, ..., Sensor16]
+    センサ値(小さいほど高圧)を、(大きいほど高圧)に変換して計算する関数
     """
+    # ==========================================================
+    # 1. 値の反転処理 (ここがポイント)
+    # 圧力がかかると値が小さくなるセンサを、扱いやすいように逆転させます
+    # ==========================================================
+    pressure_values = MAX_SENSOR_VALUE - raw_values
+    
+    # 計算誤差でマイナスにならないように0で止める
+    pressure_values = np.maximum(pressure_values, 0)
+    
+    # 2. 領域ごとの圧力合計計算（反転後の値を使います）
+    p_ff = np.sum(pressure_values[IDX_FOREFOOT]) # 前足部
+    p_mf = np.sum(pressure_values[IDX_MIDFOOT])  # 中足部
+    p_rf = np.sum(pressure_values[IDX_REARFOOT]) # 後足部
+    
+    total_pressure = p_ff + p_mf + p_rf
+    
+    # 足が浮いている（圧力がほぼゼロ）場合は計算しない
+    # ノイズ対策として、合計値が小さいときは無視します
+    if total_pressure < 50: 
+        return None, 0, 0, 0
+
+    # 3. 比率計算 (中足部 / 全体)
+    ratio_mf = p_mf / total_pressure
+    
+    return ratio_mf, p_ff, p_mf, p_rf
+
+def analyze_file_pattern(filepath):
+    """ 1つのCSVファイルを読み込んで判定する """
     try:
-        # ヘッダーありで読み込む
-        df = pd.read_csv(filepath) 
+        # CSV読み込み
+        df = pd.read_csv(filepath)
         
-        # 必要な列があるかチェック
-        if 'Label' not in df.columns or 'Sensor1' not in df.columns:
-            print(f"スキップ: {filepath} (形式が違います)")
-            return None, None
+        # データ列の特定（Sensor1～Sensor16 または 2列目以降）
+        if 'Sensor1' in df.columns:
+            sensor_cols = [f'Sensor{i}' for i in range(1, 17)]
+            sensor_df = df[sensor_cols]
+        else:
+            # カラム名がない場合、2列目から18列目(インデックス2~17)を取得
+            sensor_df = df.iloc[:, 2:18]
 
-        user_name = str(df['Label'].iloc[0]) # 名前
+        # 計算のために少数(float)型に変換
+        raw_sensor_data = sensor_df.values.astype(float)
         
-        # センサーデータは "Sensor1" ～ "Sensor16" の列を取得
-        # ilocを使う場合: 0:Label, 1:Time, 2~17:Sensors なので [:, 2:18]
-        sensor_df = df.iloc[:, 2:18]
-        
-        # 時間データがあれば取得
-        time_vals = df['Time'].values if 'Time' in df.columns else None
-
-        if sensor_df.shape[1] < 16: return None, None
+        if raw_sensor_data.shape[1] != 16:
+            print(f"列数エラー: {filepath} は16列ではありません")
+            return None
 
     except Exception as e:
-        print(f"エラー ({filepath}): {e}")
-        return None, None
+        print(f"読込エラー ({filepath}): {e}")
+        return None
 
-    features_list = []
-    df_cop = calculate_cop_trajectory(sensor_df.values)
-    
-    # データを可視化用に保存しておく（最初の1ファイルだけ表示などするため）
-    # ここでは学習データ作成が主目的なので計算だけ進める
+    # --- フレームごとの判定 ---
+    elderly_count = 0
+    young_count = 0
+    valid_ratios = []
 
-    step = window_size // 2
-    
-    for start_idx in range(0, len(df_cop) - window_size, step):
-        end_idx = start_idx + window_size
+    for i in range(len(raw_sensor_data)):
+        row_raw = raw_sensor_data[i]
         
-        window_cop = df_cop.iloc[start_idx:end_idx, :]
+        # 特徴量計算（ここで内部的に値が反転されます）
+        result = calculate_pressure_features(row_raw)
         
-        # ウィンドウ内のTimeデータ
-        window_time = time_vals[start_idx:end_idx] if time_vals is not None else None
-        
-        feat = calculate_sway_features(window_cop, window_time)
-        features_list.append(feat)
-        
-    return np.array(features_list), user_name
+        # 足が乗っていないフレームはスキップ
+        if result[0] is None:
+            continue
+            
+        ratio_mf, p_ff, p_mf, p_rf = result
+        valid_ratios.append(ratio_mf)
 
-def visualize_trajectory(filepath):
-    """ 指定したファイルの重心軌跡を描画するおまけ関数 """
-    try:
-        df = pd.read_csv(filepath)
-        sensor_df = df.iloc[:, 2:18]
-        df_cop = calculate_cop_trajectory(sensor_df.values)
-        
-        plt.figure(figsize=(6, 6))
-        plt.plot(df_cop['X'], df_cop['Y'], alpha=0.7, label='COP Trace')
-        plt.scatter(df_cop['X'].mean(), df_cop['Y'].mean(), color='red', label='Mean')
-        plt.title(f"COP Trajectory: {df['Label'].iloc[0]}")
-        plt.xlabel("X (Left-Right)")
-        plt.ylabel("Y (Back-Front)")
-        plt.grid(True)
-        plt.legend()
-        plt.axis('equal') # 縦横比を合わせる
-        plt.show()
-    except:
-        pass
+        # ★ 判定ロジック ★
+        # 中足部の比率が閾値を超えていたら「高齢者パターン」
+        if ratio_mf > THRESHOLD_MF_RATIO:
+            elderly_count += 1
+        else:
+            young_count += 1
+
+    # 結果集計
+    valid_frames = elderly_count + young_count
+    if valid_frames == 0:
+        return {
+            "file": os.path.basename(filepath),
+            "result": "データなし(足離れ)",
+            "avg_mf_ratio": 0
+        }
+
+    # 最終判定（多数決）
+    final_judgement = "高齢者パターン" if elderly_count > young_count else "若者パターン"
+    avg_mf_ratio = np.mean(valid_ratios)
+
+    return {
+        "file": os.path.basename(filepath),
+        "result": final_judgement,
+        "avg_mf_ratio": avg_mf_ratio
+    }
 
 def main():
-    # 1. データセットの作成
-    X = [] 
-    y = [] 
-    
-    csv_files = glob.glob(os.path.join(DATA_FOLDER, "*.csv"))
-    print(f"{len(csv_files)} 個のファイルを読み込み中...")
+    print(f"=== 足圧判定プログラム ===")
+    print(f"設定: 値が大きいほど高圧力に変換して計算")
+    print(f"閾値: 中足部が全体の {THRESHOLD_MF_RATIO*100:.1f}% 以上なら高齢者と判定")
+    print("-" * 60)
 
-    if len(csv_files) == 0:
-        print("エラー: CSVファイルが見つかりません。フォルダ名を確認してください。")
+    # フォルダ内のCSVリストを取得
+    csv_files = glob.glob(os.path.join(TEST_FOLDER, "*.csv"))
+    
+    if not csv_files:
+        print(f"CSVファイルが見つかりません: {TEST_FOLDER}")
         return
+
+    print(f"{'ファイル名':<25} | {'中足部率':<10} | {'判定結果'}")
+    print("-" * 60)
 
     for filepath in csv_files:
-        features, name = extract_features_from_file(filepath, WINDOW_SIZE)
-        
-        # おまけ: 1つ目のファイルだけグラフ表示してみる
-        # if len(X) == 0: visualize_trajectory(filepath)
-
-        if features is not None and len(features) > 0:
-            for f in features:
-                X.append(f)
-                #y.append(name)
-                if "roujin" in name:     # ファイル名に "roujin" が含まれていたら
-                    label = "Elderly"    # 正解ラベルを「老人」にする
-                else:                    # それ以外（masamune, niharaなど）なら
-                    label = "Young"  
-                    # 正解ラベルを「若者」にする
-
-                y.append(label)
-            print(f"  - 読込完了: {name} ({len(features)}サンプル)")
-
-    if len(X) == 0:
-        print("有効なデータがありませんでした。")
-        return
-
-    X = np.array(X)
-    y = np.array(y)
-    
-    print(f"\n全データ数: {len(X)}")
-    
-    # 2. 分割
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # 3. 学習
-    print("AIモデルを学習中...")
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
-
-    # 4. 評価
-    print("評価中...")
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    
-    print(f"\n=== 結果 ===")
-    print(f"正解率 (Accuracy): {accuracy * 100:.2f}%")
-    print("\n詳細レポート:")
-    print(classification_report(y_test, y_pred))
-
-    print("\n特徴量の重要度:")
-    feature_names = ["軌跡長", "A-P幅(前後)", "M-L幅(左右)", "平均速度", "重心X平均", "重心Y平均"]
-    importances = model.feature_importances_
-    for name, imp in zip(feature_names, importances):
-        print(f"  {name}: {imp:.4f}")
+        res = analyze_file_pattern(filepath)
+        if res:
+            ratio_str = f"{res['avg_mf_ratio']*100:.1f}%"
+            print(f"{res['file']:<25} | {ratio_str:<10} | {res['result']}")
 
 if __name__ == "__main__":
     main()
