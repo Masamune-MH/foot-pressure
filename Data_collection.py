@@ -7,12 +7,13 @@ import numpy as np
 # --- 設定 ---
 SERIAL_PORT = "COM5"
 BAUD_RATE = 9600
+
 SENSOR_COUNT = 16
 # ファイル名は動的に生成するため、ディレクトリのみ指定などの運用が良いですが、一旦元のままにします
 CSV_FILENAME_BASE = "foot_pressure_data/" 
 
 # 【変更点1】サンプル数指定ではなく「計測時間（秒）」で指定する
-MEASURE_DURATION_SEC = 30  # 30秒〜60秒推奨
+MEASURE_DURATION_SEC = 60  # 30秒〜60秒推奨
 
 def collect_data():
     # シリアル通信のセットアップ

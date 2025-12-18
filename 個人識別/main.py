@@ -151,7 +151,14 @@ def main():
         if features is not None and len(features) > 0:
             for f in features:
                 X.append(f)
-                y.append(name)
+                #y.append(name)
+                if "roujin" in name:     # ファイル名に "roujin" が含まれていたら
+                    label = "Elderly"    # 正解ラベルを「老人」にする
+                else:                    # それ以外（masamune, niharaなど）なら
+                    label = "Young"  
+                    # 正解ラベルを「若者」にする
+
+                y.append(label)
             print(f"  - 読込完了: {name} ({len(features)}サンプル)")
 
     if len(X) == 0:
