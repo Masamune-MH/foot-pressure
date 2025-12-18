@@ -23,5 +23,5 @@ void loop() {
   Serial.write('\n'); 
 
   // 3. 待機 (Pythonの描画速度に合わせて調整)
-  delay(1000); 
+  delay(200); 
 }
