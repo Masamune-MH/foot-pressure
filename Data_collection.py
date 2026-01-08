@@ -12,7 +12,7 @@ SENSOR_COUNT = 16
 CSV_FILENAME_BASE = "foot_pressure_data/" 
 
 # 計測時間（秒）
-MEASURE_DURATION_SEC = 60 
+MEASURE_DURATION_SEC = 30 
 
 def collect_data():
     # シリアル通信のセットアップ
@@ -56,9 +56,11 @@ def collect_data():
                 
                 # 経過時間を記録
                 elapsed = round(time.time() - start_time, 4)
-                
-                row = [label_name, elapsed] + pressure_values
-                collected_data.append(row)
+
+                if elapsed >= 1.0: 
+                    row = [label_name, elapsed] + pressure_values
+                    collected_data.append(row)
+                    
 
                 # 1秒ごとに経過を表示
                 if time.time() - last_print_time > 1.0:

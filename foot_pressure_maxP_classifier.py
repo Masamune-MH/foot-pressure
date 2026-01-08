@@ -75,8 +75,8 @@ def build_test_dataset(test_dir):
 if __name__ == "__main__":
 
     BASE_DIR = "foot_pressure_data"
-    TRAIN_DIR = os.path.join(BASE_DIR, "train")
-    TEST_DIR  = os.path.join(BASE_DIR, "test")
+    TRAIN_DIR = os.path.join(BASE_DIR, "train_defined")
+    TEST_DIR  = os.path.join(BASE_DIR, "test_defined")
 
     # ---------
     # 学習
